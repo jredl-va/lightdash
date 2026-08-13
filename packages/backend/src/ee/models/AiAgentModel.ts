@@ -5030,6 +5030,23 @@ export class AiAgentModel {
         return rows.length > 0;
     }
 
+    async claimPromptExecutionMode(
+        promptUuid: string,
+        executionMode: 'standard' | 'deep_research',
+    ): Promise<boolean> {
+        const rows = await this.database(AiPromptTableName)
+            .update({ execution_mode: executionMode })
+            .where('ai_prompt_uuid', promptUuid)
+            .where((query) =>
+                query
+                    .whereNull('execution_mode')
+                    .orWhere('execution_mode', executionMode),
+            )
+            .returning<{ ai_prompt_uuid: string }[]>('ai_prompt_uuid');
+
+        return rows.length > 0;
+    }
+
     async failPendingPrompts(
         promptUuids: string[],
         errorMessage: string,

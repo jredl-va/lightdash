@@ -35,6 +35,7 @@ import {
 } from '../database/entities/aiDeepResearch';
 import {
     AiDeepResearchActiveRunError,
+    AiDeepResearchPromptExecutionModeError,
     AiDeepResearchRunModel,
 } from './AiDeepResearchRunModel';
 
@@ -245,6 +246,17 @@ describe('AiDeepResearchRunModel integration', () => {
                 : eventType,
         );
     };
+
+    it('rejects research after standard execution claims the prompt', async () => {
+        const standardPromptUuid = await createAdditionalPrompt();
+        await database(AiPromptTableName)
+            .update({ execution_mode: 'standard' })
+            .where('ai_prompt_uuid', standardPromptUuid);
+
+        await expect(
+            createRun({ promptUuid: standardPromptUuid }),
+        ).rejects.toBeInstanceOf(AiDeepResearchPromptExecutionModeError);
+    });
 
     it('allows exactly one worker to claim a queued run', async () => {
         const run = await createRun();

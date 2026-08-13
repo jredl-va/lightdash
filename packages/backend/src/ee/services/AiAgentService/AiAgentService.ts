@@ -466,6 +466,25 @@ export const shouldEnqueueReviewClassifierForPromptUpdate = (
     update.errorMessage !== undefined ||
     (update.response !== undefined && update.tokenUsage !== undefined);
 
+export const assertDeepResearchPromptExecution = ({
+    promptRunUuid,
+    expectedRunUuid,
+}: {
+    promptRunUuid: string | undefined;
+    expectedRunUuid: string | null;
+}): void => {
+    if (expectedRunUuid === null && promptRunUuid) {
+        throw new ConflictError(
+            'This prompt belongs to a Deep Research run and cannot be used for a standard chat response',
+        );
+    }
+    if (expectedRunUuid && promptRunUuid !== expectedRunUuid) {
+        throw new ConflictError(
+            'This prompt does not match the requested Deep Research run',
+        );
+    }
+};
+
 type EmbedAiAgentRuntimeOptions = {
     embedSpaceUuid: string;
     spaceAccess: string[];
@@ -478,7 +497,9 @@ type AiAgentServiceDependencies = {
     aiAgentDocumentModel: AiAgentDocumentModel;
     aiDeepResearchRunModel: Pick<
         AiDeepResearchRunModel,
-        'findAgentContextByThreadScoped' | 'findLatestProgressByRunUuids'
+        | 'findAgentContextByThreadScoped'
+        | 'findByPromptForExecution'
+        | 'findLatestProgressByRunUuids'
     >;
     projectContextModel: ProjectContextModel;
     analytics: LightdashAnalytics;
@@ -729,7 +750,9 @@ export class AiAgentService extends BaseService {
 
     private readonly aiDeepResearchRunModel: Pick<
         AiDeepResearchRunModel,
-        'findAgentContextByThreadScoped' | 'findLatestProgressByRunUuids'
+        | 'findAgentContextByThreadScoped'
+        | 'findByPromptForExecution'
+        | 'findLatestProgressByRunUuids'
     >;
 
     private readonly githubAppInstallationsModel: GithubAppInstallationsModel;
@@ -4950,6 +4973,7 @@ export class AiAgentService extends BaseService {
             retrieveRelevantArtifacts = true,
             onPromptResolved,
             resetErrorForStreamRetry = false,
+            expectedDeepResearchRunUuid,
         }: {
             agentUuid: string;
             threadUuid: string;
@@ -4960,6 +4984,7 @@ export class AiAgentService extends BaseService {
                 responseState: AiPromptResponseState,
             ) => void;
             resetErrorForStreamRetry?: boolean;
+            expectedDeepResearchRunUuid?: string | null;
         },
     ) {
         if (!user.organizationUuid) {
@@ -5022,6 +5047,31 @@ export class AiAgentService extends BaseService {
             prompt.threadUuid !== threadUuid
         ) {
             throw new NotFoundError(`Prompt not found: ${targetPromptUuid}`);
+        }
+        if (expectedDeepResearchRunUuid !== undefined) {
+            const deepResearchRun =
+                await this.aiDeepResearchRunModel.findByPromptForExecution({
+                    promptUuid: prompt.promptUuid,
+                    organizationUuid: user.organizationUuid,
+                    projectUuid: prompt.projectUuid,
+                });
+            assertDeepResearchPromptExecution({
+                promptRunUuid:
+                    deepResearchRun?.ai_deep_research_run_uuid ?? undefined,
+                expectedRunUuid: expectedDeepResearchRunUuid,
+            });
+            const executionModeClaimed =
+                await this.aiAgentModel.claimPromptExecutionMode(
+                    prompt.promptUuid,
+                    expectedDeepResearchRunUuid === null
+                        ? 'standard'
+                        : 'deep_research',
+                );
+            if (!executionModeClaimed) {
+                throw new ConflictError(
+                    'This prompt is already assigned to a different execution mode',
+                );
+            }
         }
         if (
             resetErrorForStreamRetry &&
@@ -5234,6 +5284,7 @@ export class AiAgentService extends BaseService {
                 agentUuid,
                 threadUuid,
                 resetErrorForStreamRetry: true,
+                expectedDeepResearchRunUuid: null,
                 onPromptResolved: (promptUuid, responseState) => {
                     trackedPromptUuid = promptUuid;
                     this.trackStreamPrompt(promptUuid, responseState);
@@ -5841,6 +5892,10 @@ export class AiAgentService extends BaseService {
                 agentUuid,
                 threadUuid,
                 promptUuid,
+                expectedDeepResearchRunUuid:
+                    execution.mode === 'deep_research'
+                        ? execution.runUuid
+                        : null,
             });
             if (!user.organizationUuid) {
                 throw new ForbiddenError();

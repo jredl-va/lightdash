@@ -24,10 +24,12 @@ import {
     AiAgentToolCallErrorTableName,
     AiAgentToolCallTableName,
     AiAgentToolResultTableName,
+    AiPromptTableName,
     AiThreadTableName,
     type AiAgentToolCallErrorTable,
     type AiAgentToolCallTable,
     type AiAgentToolResultTable,
+    type AiPromptTable,
     type AiThreadTable,
 } from '../database/entities/ai';
 import {
@@ -130,6 +132,12 @@ export class AiDeepResearchActiveRunError extends Error {
         super('A Deep Research run is already active in this thread');
         this.name = 'AiDeepResearchActiveRunError';
         this.activeRunUuid = activeRunUuid;
+    }
+}
+
+export class AiDeepResearchPromptExecutionModeError extends Error {
+    constructor() {
+        super('This prompt is already assigned to standard chat execution');
     }
 }
 
@@ -315,6 +323,21 @@ export class AiDeepResearchRunModel {
                 .forUpdate()
                 .first();
 
+            const claimedPrompt = await transaction<AiPromptTable>(
+                AiPromptTableName,
+            )
+                .update({ execution_mode: 'deep_research' })
+                .where('ai_prompt_uuid', data.promptUuid)
+                .where((query) =>
+                    query
+                        .whereNull('execution_mode')
+                        .orWhere('execution_mode', 'deep_research'),
+                )
+                .returning<{ ai_prompt_uuid: string }[]>('ai_prompt_uuid');
+            if (claimedPrompt.length === 0) {
+                throw new AiDeepResearchPromptExecutionModeError();
+            }
+
             const activeRun = await transaction<AiDeepResearchRunsTable>(
                 AiDeepResearchRunsTableName,
             )
@@ -427,6 +450,20 @@ export class AiDeepResearchRunModel {
             .where('organization_uuid', args.organizationUuid)
             .where('project_uuid', args.projectUuid)
             .where('created_by_user_uuid', args.createdByUserUuid)
+            .first();
+    }
+
+    async findByPromptForExecution(args: {
+        promptUuid: string;
+        organizationUuid: string;
+        projectUuid: string;
+    }): Promise<DbAiDeepResearchRun | undefined> {
+        return this.database<AiDeepResearchRunsTable>(
+            AiDeepResearchRunsTableName,
+        )
+            .where('prompt_uuid', args.promptUuid)
+            .where('organization_uuid', args.organizationUuid)
+            .where('project_uuid', args.projectUuid)
             .first();
     }
 
