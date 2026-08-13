@@ -446,6 +446,85 @@ describe('useDeepResearchRun', () => {
         expect(lightdashApiMock).toHaveBeenCalledTimes(callsAtCompletion);
     });
 
+    it.each([403, 404])(
+        'stops run and event polling after a %s run response',
+        async (statusCode) => {
+            lightdashApiMock.mockImplementation(({ url }: { url: string }) => {
+                if (url.includes('/events')) {
+                    return Promise.resolve({
+                        events: [],
+                        nextCursor: null,
+                    });
+                }
+                return Promise.reject({
+                    error: {
+                        message: 'Run is unavailable',
+                        statusCode,
+                    },
+                });
+            });
+
+            const { result } = renderHook(
+                () => useDeepResearchRun(registration),
+                { wrapper: getWrapper() },
+            );
+
+            await waitFor(() => expect(result.current.isError).toBe(true));
+            const callsAfterFailure = lightdashApiMock.mock.calls.length;
+
+            await act(async () => {
+                await vi.advanceTimersByTimeAsync(10_000);
+            });
+
+            expect(lightdashApiMock).toHaveBeenCalledTimes(callsAfterFailure);
+            expect(
+                lightdashApiMock.mock.calls.filter(([args]) =>
+                    (args as { url: string }).url.includes('/events'),
+                ),
+            ).toHaveLength(1);
+        },
+    );
+
+    it('resumes polling when a mounted hook switches away from an unavailable run', async () => {
+        lightdashApiMock.mockImplementation(({ url }: { url: string }) => {
+            if (url.includes('/events')) {
+                return Promise.resolve({ events: [], nextCursor: null });
+            }
+            if (url.includes('/run-1')) {
+                return Promise.reject({
+                    error: {
+                        message: 'Run is unavailable',
+                        statusCode: 404,
+                    },
+                });
+            }
+            return Promise.resolve({
+                ...getRun('running'),
+                aiDeepResearchRunUuid: 'run-2',
+            });
+        });
+        let currentRegistration = registration;
+        const { result, rerender } = renderHook(
+            () => useDeepResearchRun(currentRegistration),
+            { wrapper: getWrapper() },
+        );
+
+        await waitFor(() => expect(result.current.isError).toBe(true));
+
+        currentRegistration = { ...registration, runUuid: 'run-2' };
+        rerender();
+        await waitFor(() => expect(result.current.data?.uuid).toBe('run-2'));
+        const callsAfterSwitch = lightdashApiMock.mock.calls.length;
+
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(2_100);
+        });
+
+        expect(lightdashApiMock.mock.calls.length).toBeGreaterThan(
+            callsAfterSwitch,
+        );
+    });
+
     it('loads every event page before calculating activity counts', async () => {
         lightdashApiMock.mockImplementation(({ url }: { url: string }) => {
             if (url.includes('/events') && !url.includes('cursor=')) {
